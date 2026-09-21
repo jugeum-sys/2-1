@@ -4,65 +4,72 @@
 #include <ctype.h>
 #include <string.h>
 
-#define MAX_NODES (1 << 16)   
-#define MAX_INPUT 4096
+typedef struct BNode {
+    char           data;
+    struct BNode* left;
+    struct BNode* right;
+} BNode;
 
-static char tree[MAX_NODES];       
-static int  charIndex[26];         
 static const char* src;
 static int  pos;
-static int  maxIndexUsed = 0;      
-
+static BNode* charNode[26];    
+static BNode* charParent[26];  
+static int  totalAllocated = 0;
 
 static void skipSpaces(void) {
     while (src[pos] != '\0' && isspace((unsigned char)src[pos])) pos++;
 }
 
 static void fail(const char* msg) {
-    fprintf(stderr, "Çü½Ä ¿À·ù: %s (À§Ä¡ %d)\n", msg, pos);
+    fprintf(stderr, "í˜•ì‹ ì˜¤ë¥˜: %s (ìœ„ì¹˜ %d)\n", msg, pos);
     exit(1);
 }
 
-static void parseNode(int idx) {
-    skipSpaces();
-    if (!isupper((unsigned char)src[pos])) return;   
 
-    if (idx <= 0 || idx >= MAX_NODES) fail("Æ®¸®°¡ ³Ê¹« ±í½À´Ï´Ù(¹è¿­ Å©±â ÃÊ°ú)");
+static BNode* parseNode(BNode* parent) {
+    skipSpaces();
+    if (!isupper((unsigned char)src[pos])) return NULL;   
 
     char c = src[pos];
-    if (charIndex[c - 'A'] != 0) fail("°°Àº ÀÌ¸§ÀÇ ³ëµå°¡ µÎ ¹ø ³ª¿Ô½À´Ï´Ù");
+    if (charNode[c - 'A'] != NULL) fail("ê°™ì€ ì´ë¦„ì˜ ë…¸ë“œê°€ ë‘ ë²ˆ ë‚˜ì™”ìŠµë‹ˆë‹¤");
 
-    tree[idx] = c;
-    charIndex[c - 'A'] = idx;
-    if (idx > maxIndexUsed) maxIndexUsed = idx;
+    BNode* node = (BNode*)malloc(sizeof(BNode));
+    if (!node) fail("ë©”ëª¨ë¦¬ í• ë‹¹ ì‹¤íŒ¨");
+    node->data = c;
+    node->left = node->right = NULL;
+
+    charNode[c - 'A'] = node;
+    charParent[c - 'A'] = parent;
+    totalAllocated++;
     pos++;
 
     skipSpaces();
-    if (src[pos] != '(') return;                      
-    pos++;                                            
+    if (src[pos] != '(') return node;                     
+    pos++;                                                 
 
-    parseNode(idx * 2);                               
+    node->left = parseNode(node);                          
 
     skipSpaces();
     if (src[pos] == ',') {
-        pos++;                                        
-        parseNode(idx * 2 + 1);                       
+        pos++;                                             
+        node->right = parseNode(node);                     
         skipSpaces();
     }
-    if (src[pos] != ')') fail("')'°¡ ÇÊ¿äÇÕ´Ï´Ù");
-    pos++;                                            
+    if (src[pos] != ')') fail("')'ê°€ í•„ìš”í•©ë‹ˆë‹¤");
+    pos++;                                                
+
+    return node;
 }
 
 
-static void printSideways(int idx, int depth) {
-    if (idx >= MAX_NODES || tree[idx] == 0) return;
-    printSideways(idx * 2 + 1, depth + 1);            
+static void printSideways(BNode* node, int depth) {
+    if (node == NULL) return;
+    printSideways(node->right, depth + 1);
     for (int i = 0; i < depth - 1; i++) printf("    ");
     if (depth > 0) printf("+---");
-    printf("%c\n", tree[idx]);
-    printSideways(idx * 2, depth + 1);                 
+    printf("%c\n", node->data);
+    printSideways(node->left, depth + 1);
 }
-
 
 
 typedef struct {
@@ -70,12 +77,9 @@ typedef struct {
     int hasTwoChildren;
 } Stats;
 
-static void computeStats(int idx, int depth, Stats* st) {
-    if (idx >= MAX_NODES || tree[idx] == 0) return;
-
-    int hasLeft = (idx * 2 < MAX_NODES) && tree[idx * 2] != 0;
-    int hasRight = (idx * 2 + 1 < MAX_NODES) && tree[idx * 2 + 1] != 0;
-    int childCount = hasLeft + hasRight;
+static void computeStats(BNode* node, int depth, Stats* st) {
+    if (node == NULL) return;
+    int childCount = (node->left != NULL) + (node->right != NULL);
 
     st->total++;
     if (childCount == 0) st->leaf++; else st->nonLeaf++;
@@ -83,96 +87,105 @@ static void computeStats(int idx, int depth, Stats* st) {
     if (childCount == 2) st->hasTwoChildren = 1;
     if (depth > st->height) st->height = depth;
 
-    computeStats(idx * 2, depth + 1, st);
-    computeStats(idx * 2 + 1, depth + 1, st);
+    computeStats(node->left, depth + 1, st);
+    computeStats(node->right, depth + 1, st);
 }
 
 
-static int isCompleteArray(int total) {
-    for (int i = 1; i <= total; i++) {
-        if (tree[i] == 0) return 0;
+static int isCompleteLinked(BNode* root, int total) {
+    if (root == NULL) return 1;
+
+    int qsize = 2 * (total + 2);
+    BNode** queue = (BNode**)malloc(sizeof(BNode*) * qsize);
+    if (!queue) fail("ë©”ëª¨ë¦¬ í• ë‹¹ ì‹¤íŒ¨(ì™„ì „ì„± ê²€ì‚¬ìš© í)");
+
+    int front = 0, rear = 0;
+    queue[rear++] = root;
+    int seenEmpty = 0;
+    int result = 1;
+
+    while (front < rear) {
+        BNode* cur = queue[front++];
+        if (cur == NULL) {
+            seenEmpty = 1;
+        }
+        else {
+            if (seenEmpty) { result = 0; break; }
+            queue[rear++] = cur->left;
+            queue[rear++] = cur->right;
+        }
     }
-    return 1;
+    free(queue);
+    return result;
 }
-
 
 
 int main(void) {
-    static char input[MAX_INPUT];
+    static char input[4096];
 
-    printf("===== ¹è¿­ ±â¹İ ÀÌÁøÆ®¸® =====\n");
-    printf("ÀÌÁøÆ®¸®¸¦ °ıÈ£ Ç¥±â¹ıÀ¸·Î ÀÔ·ÂÇÏ¼¼¿ä: ");
+    printf("===== ì—°ê²° ìë£Œêµ¬ì¡° ê¸°ë°˜ ì´ì§„íŠ¸ë¦¬ =====\n");
+    printf("ì´ì§„íŠ¸ë¦¬ë¥¼ ê´„í˜¸ í‘œê¸°ë²•ìœ¼ë¡œ ì…ë ¥í•˜ì„¸ìš”: ");
     if (!fgets(input, sizeof(input), stdin)) return 1;
     input[strcspn(input, "\n")] = '\0';
 
-    memset(tree, 0, sizeof(tree));
-    memset(charIndex, 0, sizeof(charIndex));
+    memset(charNode, 0, sizeof(charNode));
+    memset(charParent, 0, sizeof(charParent));
     src = input; pos = 0;
 
-    parseNode(1);
+    BNode* root = parseNode(NULL);
     skipSpaces();
-    if (src[pos] != '\0') fail("Ã³¸®µÇÁö ¾ÊÀº ¹®ÀÚ°¡ ³²¾Æ ÀÖ½À´Ï´Ù");
-    if (tree[1] == 0) { fprintf(stderr, "Çü½Ä ¿À·ù: ·çÆ® ³ëµå°¡ ¾ø½À´Ï´Ù\n"); return 1; }
+    if (src[pos] != '\0') fail("ì²˜ë¦¬ë˜ì§€ ì•Šì€ ë¬¸ìê°€ ë‚¨ì•„ ìˆìŠµë‹ˆë‹¤");
+    if (root == NULL) { fprintf(stderr, "í˜•ì‹ ì˜¤ë¥˜: ë£¨íŠ¸ ë…¸ë“œê°€ ì—†ìŠµë‹ˆë‹¤\n"); return 1; }
 
-    
-    printf("\n[1] ¿ŞÂÊÀ¸·Î ´©¿î ÀÌÁøÆ®¸®\n");
-    printSideways(1, 0);
+    printf("\n[1] ì™¼ìª½ìœ¼ë¡œ ëˆ„ìš´ ì´ì§„íŠ¸ë¦¬\n");
+    printSideways(root, 0);
 
-    
     Stats st = { 0, 0, 0, 0, 0, 0 };
-    computeStats(1, 1, &st);
+    computeStats(root, 1, &st);
 
-    printf("\n[2] Æ®¸® Á¤º¸\n");
-    printf("  ÀüÃ¼ ³ëµåÀÇ ¼ö   : %d\n", st.total);
-    printf("  ´Ü¸» ³ëµåÀÇ ¼ö   : %d\n", st.leaf);
-    printf("  ºñ´Ü¸» ³ëµåÀÇ ¼ö : %d\n", st.nonLeaf);
-    printf("  Æ®¸®ÀÇ ³ôÀÌ      : %d\n", st.height);
-    printf("  Æ®¸®ÀÇ Â÷¼ö      : %d\n", st.degree);
+    printf("\n[2] íŠ¸ë¦¬ ì •ë³´\n");
+    printf("  ì „ì²´ ë…¸ë“œì˜ ìˆ˜   : %d\n", st.total);
+    printf("  ë‹¨ë§ ë…¸ë“œì˜ ìˆ˜   : %d\n", st.leaf);
+    printf("  ë¹„ë‹¨ë§ ë…¸ë“œì˜ ìˆ˜ : %d\n", st.nonLeaf);
+    printf("  íŠ¸ë¦¬ì˜ ë†’ì´      : %d\n", st.height);
+    printf("  íŠ¸ë¦¬ì˜ ì°¨ìˆ˜      : %d\n", st.degree);
 
-    
-    int complete = isCompleteArray(st.total);
+    int complete = isCompleteLinked(root, st.total);
     int full = complete && (st.total == (1 << st.height) - 1);
     int skewed = (st.total >= 2) && !st.hasTwoChildren;
 
-    printf("\n[3] ÀÌÁøÆ®¸® ÇüÅÂ ÆÇº°\n");
-    printf("  ¿ÏÀü ÀÌÁøÆ®¸® ¿©ºÎ : %s\n", complete ? "¿¹" : "¾Æ´Ï¿À");
-    printf("  Æ÷È­ ÀÌÁøÆ®¸® ¿©ºÎ : %s\n", full ? "¿¹" : "¾Æ´Ï¿À");
-    printf("  ÆíÇâ ÀÌÁøÆ®¸® ¿©ºÎ : %s\n", skewed ? "¿¹" : "¾Æ´Ï¿À");
+    printf("\n[3] ì´ì§„íŠ¸ë¦¬ í˜•íƒœ íŒë³„\n");
+    printf("  ì™„ì „ ì´ì§„íŠ¸ë¦¬ ì—¬ë¶€ : %s\n", complete ? "ì˜ˆ" : "ì•„ë‹ˆì˜¤");
+    printf("  í¬í™” ì´ì§„íŠ¸ë¦¬ ì—¬ë¶€ : %s\n", full ? "ì˜ˆ" : "ì•„ë‹ˆì˜¤");
+    printf("  í¸í–¥ ì´ì§„íŠ¸ë¦¬ ì—¬ë¶€ : %s\n", skewed ? "ì˜ˆ" : "ì•„ë‹ˆì˜¤");
 
-    
-    long allocatedBytes = (long)MAX_NODES * (long)sizeof(char);
-    long usedSlots = maxIndexUsed;              
-    long usedBytes = usedSlots * (long)sizeof(char);
-    long payloadBytes = (long)st.total * (long)sizeof(char);
+    long nodeBytes = (long)st.total * (long)sizeof(BNode);
+    printf("\n[4] ë©”ëª¨ë¦¬ ì‚¬ìš©ëŸ‰ (ì—°ê²° ìë£Œêµ¬ì¡° ê¸°ë°˜)\n");
+    printf("  ë…¸ë“œ 1ê°œ í¬ê¸°            : %zu ë°”ì´íŠ¸ (data:1 + left:%zu + right:%zu, ì •ë ¬ í¬í•¨)\n",
+        sizeof(BNode), sizeof(BNode*), sizeof(BNode*));
+    printf("  ë…¸ë“œ %dê°œ x %zuë°”ì´íŠ¸     = %ld ë°”ì´íŠ¸ (malloc ìì²´ì˜ ê´€ë¦¬ ì˜¤ë²„í—¤ë“œëŠ” ë³„ë„, í”Œë«í¼ë§ˆë‹¤ ë‹¤ë¦„)\n",
+        st.total, sizeof(BNode), nodeBytes);
 
-    printf("\n[4] ¸Ş¸ğ¸® »ç¿ë·® (¹è¿­ ±â¹İ)\n");
-    printf("  ¹è¿­ ÀüÃ¼ Å©±â            : %ld ¹ÙÀÌÆ® (Ä­ %d°³ x %zu¹ÙÀÌÆ®)\n",
-        allocatedBytes, MAX_NODES, sizeof(char));
-    printf("  ½ÇÁ¦ »ç¿ëµÈ ÀÎµ¦½º ¹üÀ§   : 1 ~ %d (Ä­ %ld°³, %ld¹ÙÀÌÆ®)\n",
-        maxIndexUsed, usedSlots, usedBytes);
-    printf("  ±× Áß µ¥ÀÌÅÍ°¡ ÀÖ´Â ³ëµå  : %d°³ (%ld¹ÙÀÌÆ®), ³¶ºñµÈ Ä­ : %ld°³ (%ld¹ÙÀÌÆ®)\n",
-        st.total, payloadBytes, usedSlots - st.total, usedBytes - payloadBytes);
-
-    printf("\n[5] ³ëµå Á¶È¸ (ºÎ¸ğ/ÀÚ½Ä/ÇüÁ¦)\n");
-    printf("Á¶È¸ÇÒ ³ëµå¸¦ ÀÔ·ÂÇÏ¼¼¿ä (°Ç³Ê¶Ù·Á¸é Enter): ");
+    printf("\n[5] ë…¸ë“œ ì¡°íšŒ (ë¶€ëª¨/ìì‹/í˜•ì œ)\n");
+    printf("ì¡°íšŒí•  ë…¸ë“œë¥¼ ì…ë ¥í•˜ì„¸ìš” (ê±´ë„ˆë›°ë ¤ë©´ Enter): ");
     char line[64];
     if (fgets(line, sizeof(line), stdin) && isupper((unsigned char)line[0])) {
         char target = line[0];
-        int idx = charIndex[target - 'A'];
-        if (idx == 0) {
-            printf("  '%c' ³ëµå´Â Æ®¸®¿¡ ¾ø½À´Ï´Ù\n", target);
+        BNode* node = charNode[target - 'A'];
+        BNode* parent = charParent[target - 'A'];
+        if (node == NULL) {
+            printf("  '%c' ë…¸ë“œëŠ” íŠ¸ë¦¬ì— ì—†ìŠµë‹ˆë‹¤\n", target);
         }
         else {
-            int parentIdx = idx / 2;
-            int leftIdx = idx * 2;
-            int rightIdx = idx * 2 + 1;
-            int siblingIdx = (idx == 1) ? 0 : (idx % 2 == 0 ? idx + 1 : idx - 1);
+            BNode* sibling = NULL;
+            if (parent != NULL) sibling = (parent->left == node) ? parent->right : parent->left;
 
-            printf("  ºÎ¸ğ   : %s\n", (idx > 1) ? (char[2]) { tree[parentIdx], 0 } : "¾øÀ½(·çÆ®)");
-            printf("  ¿ŞÂÊ ÀÚ½Ä : %s\n", (leftIdx < MAX_NODES && tree[leftIdx] != 0) ? (char[2]) { tree[leftIdx], 0 } : "¾øÀ½");
-            printf("  ¿À¸¥ÂÊ ÀÚ½Ä : %s\n", (rightIdx < MAX_NODES && tree[rightIdx] != 0) ? (char[2]) { tree[rightIdx], 0 } : "¾øÀ½");
-            printf("  ÇüÁ¦   : %s\n", (siblingIdx > 0 && tree[siblingIdx] != 0) ? (char[2]) { tree[siblingIdx], 0 } : "¾øÀ½");
-            printf("  (ÀÎµ¦½º %d¸¦ ¾Ë°í ³ª¸é ºÎ¸ğ=idx/2, ¿ŞÂÊ=idx*2, ¿À¸¥ÂÊ=idx*2+1, ÇüÁ¦=idx^1 »ê¼ú ¿¬»ê¸¸À¸·Î O(1) °è»ê)\n", idx);
+            printf("  ë¶€ëª¨        : %s\n", parent ? (char[2]) { parent->data, 0 } : "ì—†ìŒ(ë£¨íŠ¸)");
+            printf("  ì™¼ìª½ ìì‹   : %s\n", node->left ? (char[2]) { node->left->data, 0 } : "ì—†ìŒ");
+            printf("  ì˜¤ë¥¸ìª½ ìì‹ : %s\n", node->right ? (char[2]) { node->right->data, 0 } : "ì—†ìŒ");
+            printf("  í˜•ì œ        : %s\n", sibling ? (char[2]) { sibling->data, 0 } : "ì—†ìŒ");
+            printf("  (ë…¸ë“œ ìì²´ì—ëŠ” parent í•„ë“œê°€ ì—†ì–´ì„œ, íŒŒì‹±í•  ë•Œ ë§Œë“¤ì–´ ë‘”\n"
+                "   charParent[] ë³´ì¡° í…Œì´ë¸”ì—ì„œ ë¶€ëª¨ë¥¼ ì°¾ì•„ì™”ìŠµë‹ˆë‹¤.)\n");
         }
     }
 
